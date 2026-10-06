@@ -1,0 +1,601 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>City Stunt Drive</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#87ceeb;font-family:Arial,sans-serif}
+#game{width:100%;height:100%;display:block}
+#help{position:fixed;top:12px;left:12px;background:#0009;color:white;padding:10px 13px;border-radius:10px;font-size:14px;z-index:2}
+#lives{position:fixed;top:12px;right:12px;background:#0009;color:white;padding:10px 13px;border-radius:10px;font-size:18px;font-weight:bold;z-index:2}
+#winScreen{display:none;position:fixed;inset:0;background:#0009;z-index:10;align-items:center;justify-content:center}
+.winBox{background:white;color:#111;padding:32px 42px;border-radius:20px;text-align:center;box-shadow:0 12px 40px #0008;font-family:Arial,sans-serif}
+.winBox h1{margin:0 0 12px;font-size:42px}
+.winBox p{font-size:19px;margin:0 0 22px}
+#playAgain{border:0;border-radius:12px;padding:13px 24px;font-size:18px;font-weight:bold;cursor:pointer;background:#111;color:white}
+#playAgain:hover{transform:scale(1.04)}
+</style>
+</head>
+<body>
+<div id="help">W/S = drive &nbsp; A/D = steer &nbsp; R = reset<br>Collect ⭐ stars, jump rooftops, escape the police, and don't let them touch you!</div>
+<div id="lives">❤️❤️❤️</div>
+<div id="winScreen"><div class="winBox"><h1>🎉 YOU WIN! 🎉</h1><p>You collected every star!</p><button id="playAgain">PLAY AGAIN</button></div></div>
+<div id="gameOverScreen" style="display:none;position:fixed;inset:0;background:#0009;z-index:10;align-items:center;justify-content:center"><div class="winBox"><h1>GAME OVER</h1><p>You ran out of lives.</p><button id="gameOverAgain" class="playAgainBtn">PLAY AGAIN</button></div></div>
+<canvas id="game"></canvas>
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.176.0/build/three.module.js";
+
+const canvas=document.getElementById("game");
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.15;
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x79b9e8);
+scene.fog=new THREE.Fog(0x79b9e8,150,430);
+
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,700);
+camera.position.set(0,12,25);
+
+scene.add(new THREE.HemisphereLight(0xdff4ff,0x526044,2.2));
+const sun=new THREE.DirectionalLight(0xffffff,2.5);
+sun.position.set(-80,140,60); sun.castShadow=true;
+scene.add(sun);
+
+const ground=new THREE.Mesh(
+ new THREE.PlaneGeometry(400,400),
+ new THREE.MeshStandardMaterial({color:0x5f9950})
+);
+ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+
+// Water completely surrounds the city island.
+const oceanMat=new THREE.MeshStandardMaterial({color:0x238fd0,metalness:.12,roughness:.2,transparent:true,opacity:.92});
+const ocean=new THREE.Mesh(new THREE.PlaneGeometry(620,620),oceanMat);
+ocean.rotation.x=-Math.PI/2; ocean.position.y=-.08; ocean.receiveShadow=true; scene.add(ocean);
+
+const roadMat=new THREE.MeshStandardMaterial({color:0x30343a});
+const sidewalkMat=new THREE.MeshStandardMaterial({color:0x8a8d90});
+const lineMat=new THREE.MeshStandardMaterial({color:0xf5e7a1});
+
+function box(w,h,d,mat,x,y,z){
+ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
+ m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; scene.add(m); return m;
+}
+
+// City grid: real drivable streets.
+const roads=[];
+function road(x,z,w,d){
+ box(w,.08,d,roadMat,x,.04,z);
+ roads.push({x,z,w,d});
+ // dashed center markings
+ if(w<d){
+   for(let p=z-d/2+10;p<z+d/2-5;p+=18) box(.22,.09,7,lineMat,x,.11,p);
+ }else{
+   for(let p=x-w/2+10;p<x+w/2-5;p+=18) box(7,.09,.22,lineMat,p,.11,z);
+ }
+}
+for(const x of [-126,-63,0,63,126]) road(x,0,14,390);
+for(const z of [-126,-63,0,63,126]) road(0,z,390,14);
+
+// sidewalks beside major roads
+for(const x of [-126,-63,0,63,126]){
+ for(const side of [-1,1]) box(3,.16,390,sidewalkMat,x+side*9,.08,0);
+}
+for(const z of [-126,-63,0,63,126]){
+ for(const side of [-1,1]) box(390,.16,3,sidewalkMat,0,.08,z+side*9);
+}
+
+
+// River running through the city.
+const riverGroup=new THREE.Group();
+const waterMat=new THREE.MeshStandardMaterial({
+ color:0x238fd0,metalness:.15,roughness:.18,
+ transparent:true,opacity:.9
+});
+const water=new THREE.Mesh(new THREE.PlaneGeometry(34,420),waterMat);
+water.rotation.x=-Math.PI/2;
+water.position.set(91,.10,0);
+water.receiveShadow=true;
+riverGroup.add(water);
+
+// Water surrounding the entire city.
+const outerWaterMat=new THREE.MeshStandardMaterial({
+ color:0x238fd0,metalness:.12,roughness:.2,
+ transparent:true,opacity:.9
+});
+box(70,.12,520,outerWaterMat,-225,.06,0);
+box(70,.12,520,outerWaterMat,225,.06,0);
+box(520,.12,70,outerWaterMat,0,.06,-225);
+box(520,.12,70,outerWaterMat,0,.06,225);
+
+// River banks
+const bankMat=new THREE.MeshStandardMaterial({color:0x8b7354,roughness:.95});
+box(3,.25,420,bankMat,72,.13,0);
+box(3,.25,420,bankMat,110,.13,0);
+
+// Bridges across the river at major roads.
+const bridgeMat=new THREE.MeshStandardMaterial({color:0x555b61,metalness:.35,roughness:.55});
+for(const bz of [-126,-63,0,63,126]){
+  const bridge=box(38,.55,14,bridgeMat,91,.42,bz);
+  bridge.castShadow=true;
+  // bridge railings
+  const railMat=new THREE.MeshStandardMaterial({color:0x25292d,metalness:.7});
+  box(38,.55,.18,railMat,91,1.05,bz-6);
+  box(38,.55,.18,railMat,91,1.05,bz+6);
+}
+scene.add(riverGroup);
+
+// Little trees along the river.
+function tree(x,z){
+  const trunk=new THREE.Mesh(
+    new THREE.CylinderGeometry(.28,.38,2.5,8),
+    new THREE.MeshStandardMaterial({color:0x68452c})
+  );
+  trunk.position.set(x,1.25,z); trunk.castShadow=true; scene.add(trunk);
+  const crown=new THREE.Mesh(
+    new THREE.SphereGeometry(1.8,10,8),
+    new THREE.MeshStandardMaterial({color:0x2d7d3b,roughness:.9})
+  );
+  crown.position.set(x,3,z); crown.castShadow=true; scene.add(crown);
+}
+for(let z=-185;z<=185;z+=23){
+  tree(67+(z%46===0?0:2),z);
+  tree(115-(z%46===0?0:2),z+5);
+}
+
+// Buildings in city blocks
+const buildingColors=[0x7d8794,0xa87862,0x64748b,0x8f8b78,0x6e7b72];
+const buildings=[];
+for(let gx=-157;gx<=157;gx+=31.5){
+ for(let gz=-157;gz<=157;gz+=31.5){
+   // leave street corridors open
+   if(Math.min(...[-126,-63,0,63,126].map(v=>Math.abs(gx-v)))<16) continue;
+   if(Math.min(...[-126,-63,0,63,126].map(v=>Math.abs(gz-v)))<16) continue;
+   const w=15+Math.random()*6, d=15+Math.random()*6, h=7+Math.random()*15;
+   const bx=gx+(Math.random()-.5)*5, bz=gz+(Math.random()-.5)*5;
+   const m=box(w,h,d,new THREE.MeshStandardMaterial({
+     color:buildingColors[(Math.random()*buildingColors.length)|0],
+     roughness:.78,metalness:.05
+   }),bx,h/2,bz);
+   // detailed rooftop
+   box(w+.5,.35,d+.5,new THREE.MeshStandardMaterial({color:0x343a40,roughness:.65}),bx,h+.18,bz);
+   // rooftop equipment
+   if(h>20) box(3,1.5,3,new THREE.MeshStandardMaterial({color:0x59636d}),bx,h+1,bz);
+   // simple window strips on the street-facing sides
+   const winMat=new THREE.MeshStandardMaterial({color:0xb9e7f5,emissive:0x244b59,emissiveIntensity:.28,roughness:.25});
+   for(let yy=4; yy<h-2; yy+=4){
+     for(let xx=-w/2+3; xx<w/2-2; xx+=4){
+       box(1.2,1.2,.08,winMat,bx+xx,yy,bz-d/2-.045);
+       box(1.2,1.2,.08,winMat,bx+xx,yy,bz+d/2+.045);
+     }
+   }
+   buildings.push({x:bx,z:bz,w:w,d:d,h:h});
+ }
+}
+
+// Original stunt ramps with broad wedge profile inspired by arcade stunt ramps.
+function ramp(x,z,rot=0,height=6,length=20,width=10){
+ // These used to be ramps; they are now flat bounce pads.
+ const g=new THREE.Group();
+ const padMat=new THREE.MeshStandardMaterial({color:0x59616a,metalness:.4,roughness:.3,emissive:0x101820,emissiveIntensity:.35});
+ const pad=box(length,.35,width,padMat,0,.18,0);
+ g.add(pad);
+ const ringMat=new THREE.MeshStandardMaterial({color:0x21d4ff,emissive:0x087f9c,emissiveIntensity:1.2,metalness:.25});
+ const ring=box(length*.72,.08,width*.58,ringMat,0,.4,0);
+ g.add(ring);
+ const centerMat=new THREE.MeshStandardMaterial({color:0xffd52e,emissive:0x8a6200,emissiveIntensity:1,metalness:.2});
+ const center=box(length*.28,.12,width*.22,centerMat,0,.46,0);
+ g.add(center);
+ g.position.set(x,.02,z); g.rotation.y=rot; scene.add(g);
+ return {x,z,rot,height,length,width};
+}
+const ramps=[
+ ramp(0,-94,0,2.4,7,5),
+ ramp(63,-31,Math.PI/2,2.2,6.5,5),
+ ramp(-63,63,Math.PI/2,2.4,7,5),
+ ramp(0,94,Math.PI,2.7,7.5,5),
+ ramp(126,31,Math.PI/2,2.2,6.5,5),
+ ramp(-126,-31,-Math.PI/2,2.7,7.5,5),
+ ramp(63,126,Math.PI,2.4,7,5),
+ ramp(-63,-126,0,2.4,7,5)
+];
+const buildingJumpRamps=[
+  ramp(-116,-47,Math.PI/2,3.2,8,6),
+  ramp(-53,-47,Math.PI/2,3.0,8,6),
+  ramp(73,-47,-Math.PI/2,3.0,8,6),
+  ramp(136,-47,-Math.PI/2,3.2,8,6)
+];
+ramps.push(...buildingJumpRamps);
+
+// Stars: many are easy to grab on the ground, with a smaller set on rooftops.
+const stars=[];
+const groundStarPositions=[
+ [-120,-25],[-65,-25],[-5,-25],[58,-25],[122,-25],
+ [-120,25],[-65,25],[5,25],[58,25],[122,25],
+ [-95,-120],[-32,-120],[32,-120],[95,-120],
+ [-95,120],[-32,120],[32,120],[95,120],
+ [25,-60],[25,60],[-25,-60],[-25,60]
+];
+
+for(const [x,z] of groundStarPositions){
+ const st=new THREE.Mesh(
+  new THREE.OctahedronGeometry(.85),
+  new THREE.MeshStandardMaterial({color:0xffd52e,emissive:0x8a6200,emissiveIntensity:.9,metalness:.2})
+ );
+ st.position.set(x,1.35,z);
+ st.castShadow=true;
+ scene.add(st);
+ stars.push(st);
+}
+
+// Put stars on several actual building roofs so rooftop driving is rewarded.
+const roofStarBuildings=buildings.filter((b,i)=>i%7===1).slice(0,12);
+for(const b of roofStarBuildings){
+ const st=new THREE.Mesh(
+  new THREE.OctahedronGeometry(.85),
+  new THREE.MeshStandardMaterial({color:0xffd52e,emissive:0x8a6200,emissiveIntensity:.9,metalness:.2})
+ );
+ st.position.set(b.x,b.h+1.5,b.z);
+ st.castShadow=true;
+ scene.add(st);
+ stars.push(st);
+}
+
+// Car
+const car=new THREE.Group();
+const body=new THREE.Mesh(new THREE.BoxGeometry(3.2,.85,5.2),new THREE.MeshStandardMaterial({
+ color:0xe53935,metalness:.35,roughness:.28
+}));
+body.position.y=1.05; body.castShadow=true; car.add(body);
+const bumperMat=new THREE.MeshStandardMaterial({color:0x20242a,metalness:.65,roughness:.22});
+const bumper=new THREE.Mesh(new THREE.BoxGeometry(3.05,.28,.28),bumperMat);
+bumper.position.set(0,.78,-2.62); bumper.castShadow=true; car.add(bumper);
+const lightMat=new THREE.MeshStandardMaterial({color:0xfff4bd,emissive:0xffd65a,emissiveIntensity:1.5});
+for(const x of [-1.0,1.0]){
+ const light=new THREE.Mesh(new THREE.BoxGeometry(.55,.22,.08),lightMat);
+ light.position.set(x,1.08,-2.64); car.add(light);
+}
+const cabin=new THREE.Mesh(new THREE.BoxGeometry(2.45,.8,2.25),new THREE.MeshStandardMaterial({color:0x1e293b,roughness:.2,metalness:.1}));
+cabin.position.set(0,1.7,.25); cabin.castShadow=true; car.add(cabin);
+const wheelMat=new THREE.MeshStandardMaterial({color:0x151515});
+for(const x of [-1.55,1.55]) for(const z of [-1.7,1.7]){
+ const w=new THREE.Mesh(new THREE.CylinderGeometry(.55,.55,.42,20),wheelMat);
+ w.rotation.z=Math.PI/2; w.position.set(x,.62,z); w.castShadow=true; car.add(w);
+}
+scene.add(car);
+
+let pos=new THREE.Vector3(0,0,120), vel=new THREE.Vector3(), yaw=Math.PI;
+let airborne=false, verticalVel=0, score=0, onRoof=false, currentRoof=null;
+let lives=3, won=false, gameOver=false;
+const livesEl=document.getElementById("lives");
+const winScreen=document.getElementById("winScreen");
+const gameOverScreen=document.getElementById("gameOverScreen");
+function updateLives(){ livesEl.textContent="❤️".repeat(lives)+"🖤".repeat(3-lives); }
+function loseLife(){
+  if(won || gameOver) return;
+  lives--; updateLives();
+  if(lives<=0){ gameOver=true; gameOverScreen.style.display="flex"; return; }
+  reset();
+}
+const keys={};
+addEventListener("keydown",e=>{keys[e.key.toLowerCase()]=true;if(e.key.toLowerCase()==="r"){lives=3;won=false;gameOver=false;winScreen.style.display="none";gameOverScreen.style.display="none";updateLives();reset();}});
+addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+
+function reset(){
+ if(won || gameOver) return;
+ pos.set(0,0,120); vel.set(0,0,0); yaw=Math.PI; verticalVel=0; airborne=false; onRoof=false; currentRoof=null; score=0;
+ for(const s of stars){s.visible=true;}
+ car.rotation.set(0,yaw,0);
+ if(typeof resetPolice==="function") resetPolice();
+}
+
+function nearestRoad(){
+ let best=null,dist=1e9;
+ for(const r of roads){
+   const d=Math.min(Math.abs(pos.x-r.x),Math.abs(pos.z-r.z));
+   if(d<dist){dist=d;best=r;}
+ }
+ return best;
+}
+
+// Police cars that chase the player.
+const policeCars=[];
+const policeSpawnPoints=[
+ [-45,145],[45,145],[0,175],[-126,175],[126,175],[-175,63],[175,63],[-175,-63],[175,-63]
+];
+let policeSpawnTimer=0;
+
+function makePoliceCar(x,z){
+ const g=new THREE.Group();
+ const body=new THREE.Mesh(new THREE.BoxGeometry(3,.82,4.8),new THREE.MeshStandardMaterial({color:0xf2f2f2,metalness:.25,roughness:.35})); body.position.y=.95; body.castShadow=true; g.add(body);
+ const stripe=new THREE.Mesh(new THREE.BoxGeometry(3.03,.22,2.3),new THREE.MeshStandardMaterial({color:0x15191d,roughness:.4})); stripe.position.set(0,1.38,.35); g.add(stripe);
+ const red=new THREE.Mesh(new THREE.BoxGeometry(1.15,.18,.42),new THREE.MeshStandardMaterial({color:0xff2020,emissive:0x770000,emissiveIntensity:1.5})); red.position.set(-.48,1.78,0); g.add(red);
+ const blue=new THREE.Mesh(new THREE.BoxGeometry(1.15,.18,.42),new THREE.MeshStandardMaterial({color:0x246bff,emissive:0x001d77,emissiveIntensity:1.5})); blue.position.set(.48,1.78,0); g.add(blue);
+ const wm=new THREE.MeshStandardMaterial({color:0x101010});
+ for(const wx of [-1.45,1.45]) for(const wz of [-1.55,1.55]){
+   const w=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.38,18),wm);
+   w.rotation.z=Math.PI/2; w.position.set(wx,.53,wz); g.add(w);
+ }
+ g.position.set(x,0,z); scene.add(g);
+ policeCars.push({mesh:g,vel:new THREE.Vector3(),speed:65,index:policeCars.length});
+}
+
+function resetPolice(){
+ for(const p of policeCars) scene.remove(p.mesh);
+ policeCars.length=0;
+ policeSpawnTimer=0;
+ const s=policeSpawnPoints[0];
+ makePoliceCar(s[0],s[1]);
+}
+
+function spawnNextPolice(){
+ if(policeCars.length>=policeSpawnPoints.length) return;
+ const s=policeSpawnPoints[policeCars.length];
+ makePoliceCar(s[0],s[1]);
+}
+
+makePoliceCar(policeSpawnPoints[0][0],policeSpawnPoints[0][1]);
+
+const roadCoords=[-126,-63,0,63,126];
+
+function nearestRoadPoint(x,z){
+ let best={x:0,z:0,d:Infinity};
+ for(const rx of roadCoords){
+   const d=Math.abs(x-rx);
+   if(d<best.d) best={x:rx,z:THREE.MathUtils.clamp(z,-195,195),d};
+ }
+ for(const rz of roadCoords){
+   const d=Math.abs(z-rz);
+   if(d<best.d) best={x:THREE.MathUtils.clamp(x,-195,195),z:rz,d};
+ }
+ return best;
+}
+
+function nearestIntersection(x,z){
+ let bx=roadCoords[0], bz=roadCoords[0], best=Infinity;
+ for(const rx of roadCoords) for(const rz of roadCoords){
+   const d=Math.hypot(x-rx,z-rz);
+   if(d<best){best=d;bx=rx;bz=rz;}
+ }
+ return {x:bx,z:bz,d:best};
+}
+
+function policeRouteTarget(p){
+ const me=nearestIntersection(p.mesh.position.x,p.mesh.position.z);
+ const goal=nearestIntersection(car.position.x,car.position.z);
+
+ // Once close enough, chase the player directly if the police is on the road network.
+ if(Math.hypot(p.mesh.position.x-car.position.x,p.mesh.position.z-car.position.z)<34){
+   return {x:car.position.x,z:car.position.z};
+ }
+
+ // Move one grid intersection at a time. This keeps police on the city's roads
+ // instead of repeatedly trying to drive through building blocks.
+ let tx=me.x, tz=me.z;
+ const dx=goal.x-me.x, dz=goal.z-me.z;
+ if(Math.abs(dx)>=Math.abs(dz) && Math.abs(dx)>1){
+   tx+=Math.sign(dx)*63;
+ }else if(Math.abs(dz)>1){
+   tz+=Math.sign(dz)*63;
+ }
+ return {x:tx,z:tz};
+}
+
+const clock=new THREE.Clock();
+function animate(){
+ requestAnimationFrame(animate);
+ const dt=Math.min(clock.getDelta(),.033);
+ if(won){ renderer.render(scene,camera); return; }
+
+ const forward=new THREE.Vector3(Math.sin(yaw),0,Math.cos(yaw));
+ const right=new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
+ const throttle=(keys.w||keys.arrowup?1:0)-(keys.s||keys.arrowdown?1:0);
+ const steer=(keys.a||keys.arrowleft?1:0)-(keys.d||keys.arrowright?1:0);
+
+ // Arcade physics with acceleration, drag and steering.
+ vel.addScaledVector(forward,throttle*52*dt);
+ const speed=vel.length();
+ if(Math.abs(steer)>0 && speed>.8) yaw += steer * 1.65 * dt * Math.min(speed/12,1.7);
+ vel.multiplyScalar(Math.pow(.985,dt*60));
+ const maxSpeed=52;
+ if(vel.length()>maxSpeed) vel.setLength(maxSpeed);
+
+ // Keep motion mostly ground-based but allow free turns through the city.
+ pos.addScaledVector(vel,dt);
+
+ // Bounce-pad detection. Driving over a pad launches the car upward.
+ for(const r of ramps){
+   const dx=pos.x-r.x, dz=pos.z-r.z;
+   const c=Math.cos(r.rot), s=Math.sin(r.rot);
+   const lx= dx*c+dz*s, lz=-dx*s+dz*c;
+   if(Math.abs(lx)<r.length/2 && Math.abs(lz)<r.width/2 && !airborne && speed>3){
+     verticalVel=17 + Math.min(speed*.42,14);
+     airborne=true;
+     onRoof=false;
+     currentRoof=null;
+   }
+ }
+ if(airborne){
+   verticalVel-=15*dt;
+   pos.y+=verticalVel*dt;
+   if(pos.y<=0){pos.y=0; airborne=false; verticalVel=0; onRoof=false; currentRoof=null;}
+ }else if(!onRoof){
+   pos.y=0;
+ }
+
+ // Real rooftop collision: no teleporting.
+ // The car can only land on a roof while falling from above it.
+ if(airborne && verticalVel<=0){
+   for(const b of buildings){
+     const inside = Math.abs(pos.x-b.x) < b.w/2 &&
+                    Math.abs(pos.z-b.z) < b.d/2;
+     if(inside && pos.y<=b.h+1.2 && pos.y>=b.h-4.0 && verticalVel<=0){
+       pos.y=b.h;
+       verticalVel=0;
+       airborne=false;
+       onRoof=true;
+       currentRoof=b;
+       break;
+     }
+   }
+ }
+
+ // While on a roof, keep the car exactly on that roof only while
+ // its wheels are actually over the building footprint.
+ if(onRoof && currentRoof){
+   const b=currentRoof;
+   const inside = Math.abs(pos.x-b.x) < b.w/2-0.4 &&
+                  Math.abs(pos.z-b.z) < b.d/2-0.4;
+   if(inside){
+     pos.y=b.h;
+     verticalVel=0;
+   }else{
+     // Driving off the edge: start falling from the actual roof edge.
+     onRoof=false;
+     currentRoof=null;
+     airborne=true;
+     verticalVel=0;
+   }
+ }
+
+ // Building walls block the car at street level.
+ if(!airborne && !onRoof && pos.y<1.0){
+   for(const b of buildings){
+     const inside = Math.abs(pos.x-b.x) < b.w/2+1.1 &&
+                    Math.abs(pos.z-b.z) < b.d/2+1.1;
+     if(inside){
+       const dx=(b.w/2+1.1)-Math.abs(pos.x-b.x);
+       const dz=(b.d/2+1.1)-Math.abs(pos.z-b.z);
+       if(dx<dz) pos.x += (pos.x>=b.x?dx:-dx);
+       else pos.z += (pos.z>=b.z?dz:-dz);
+       vel.multiplyScalar(.25);
+     }
+   }
+ }
+
+ // Water is deadly. The river also counts as water unless the player is on a bridge.
+ const inOuterWater = Math.abs(pos.x)>199 || Math.abs(pos.z)>199;
+ const inRiver = Math.abs(pos.x-91)<17;
+ const onBridge = [-126,-63,0,63,126].some(bz=>Math.abs(pos.z-bz)<7);
+ if((inOuterWater || (inRiver && !onBridge)) && pos.y<2.5){
+   loseLife();
+   return;
+ }
+
+ // Keep the car inside the island.
+ pos.x=THREE.MathUtils.clamp(pos.x,-198,198);
+ pos.z=THREE.MathUtils.clamp(pos.z,-198,198);
+
+ car.position.copy(pos); car.rotation.y=yaw;
+
+ // Smarter police chase AI.
+ // Every 30 seconds another police car joins the chase.
+ policeSpawnTimer+=dt;
+ if(policeSpawnTimer>=30){
+   policeSpawnTimer-=30;
+   spawnNextPolice();
+ }
+
+ for(let pi=policeCars.length-1; pi>=0; pi--){
+   const p=policeCars[pi];
+   const target=policeRouteTarget(p);
+   const dx=target.x-p.mesh.position.x, dz=target.z-p.mesh.position.z;
+   const dist=Math.hypot(dx,dz);
+   const desired=Math.atan2(dx,dz);
+   let diff=desired-p.mesh.rotation.y;
+   while(diff>Math.PI) diff-=Math.PI*2;
+   while(diff<-Math.PI) diff+=Math.PI*2;
+
+   // Turn more strongly when the target is far to the side.
+   const turnRate=2.8;
+   p.mesh.rotation.y+=THREE.MathUtils.clamp(diff,-turnRate*dt,turnRate*dt);
+
+   const f=new THREE.Vector3(Math.sin(p.mesh.rotation.y),0,Math.cos(p.mesh.rotation.y));
+   const throttle=dist>5 ? 1 : .35;
+   p.vel.addScaledVector(f,p.speed*3.6*throttle*dt);
+   if(p.vel.length()>p.speed) p.vel.setLength(p.speed);
+   p.vel.multiplyScalar(Math.pow(.985,dt*60));
+   p.mesh.position.addScaledVector(p.vel,dt);
+
+   // Police cars cannot drive through buildings.
+   for(const b of buildings){
+     const hit=Math.abs(p.mesh.position.x-b.x)<b.w/2+1.7 &&
+               Math.abs(p.mesh.position.z-b.z)<b.d/2+1.7;
+     if(hit){
+       const ox=(b.w/2+1.7)-Math.abs(p.mesh.position.x-b.x);
+       const oz=(b.d/2+1.7)-Math.abs(p.mesh.position.z-b.z);
+       if(ox<oz){
+         p.mesh.position.x=b.x+(p.mesh.position.x>=b.x?b.w/2+1.7:-b.w/2-1.7);
+       }else{
+         p.mesh.position.z=b.z+(p.mesh.position.z>=b.z?b.d/2+1.7:-b.d/2-1.7);
+       }
+       // Turn away from the obstacle instead of getting stuck.
+       p.vel.multiplyScalar(.2);
+       p.mesh.rotation.y += (Math.random()<.5?-1:1)*.45;
+     }
+   }
+
+   // Police can fall into the river or the water surrounding the city.
+   const policeInOuterWater = Math.abs(p.mesh.position.x)>199 || Math.abs(p.mesh.position.z)>199;
+   const policeInRiver = Math.abs(p.mesh.position.x-91)<17;
+   const policeOnBridge = [-126,-63,0,63,126].some(bz=>Math.abs(p.mesh.position.z-bz)<7);
+   if((policeInOuterWater || (policeInRiver && !policeOnBridge)) && p.mesh.position.y<2.5){
+     scene.remove(p.mesh);
+     policeCars.splice(pi,1);
+     continue;
+   }
+
+   // Only catch the player when the police car is actually at the same height.
+   // A police car driving underneath a jumping/rooftop player does NOT cause a respawn.
+   const horizontalDistance=Math.hypot(car.position.x-p.mesh.position.x,car.position.z-p.mesh.position.z);
+   const verticalDistance=Math.abs(car.position.y-p.mesh.position.y);
+   if(horizontalDistance<4 && verticalDistance<2.2){
+     loseLife();
+     break;
+   }
+ }
+
+ // Collect stars
+ for(const st of stars) if(st.visible && car.position.distanceTo(st.position)<2.35){
+   st.visible=false; score++;
+ }
+
+ // Spin stars
+ for(const st of stars) if(st.visible) st.rotation.y+=dt*2.8;
+
+ // Win only after collecting every star without dying.
+ if(score===stars.length && !won && !gameOver){
+   won=true;
+   vel.set(0,0,0);
+   winScreen.style.display="flex";
+ }
+
+ // Zoomed-out third-person camera.
+ const camTarget=new THREE.Vector3(
+   pos.x-forward.x*27,
+   13+pos.y*.4,
+   pos.z-forward.z*27
+ );
+ camera.position.lerp(camTarget,.08);
+ const look=new THREE.Vector3(pos.x+forward.x*7,pos.y+1.2,pos.z+forward.z*7);
+ camera.lookAt(look);
+
+ renderer.render(scene,camera);
+}
+animate();
+
+addEventListener("resize",()=>{
+ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+ renderer.setSize(innerWidth,innerHeight);
+});
+document.getElementById("playAgain").onclick=()=>{lives=3;won=false;gameOver=false;winScreen.style.display="none";gameOverScreen.style.display="none";updateLives();reset();};
+document.getElementById("gameOverAgain").onclick=()=>{lives=3;won=false;gameOver=false;winScreen.style.display="none";gameOverScreen.style.display="none";updateLives();reset();};
+updateLives();
+</script>
+</body>
+</html>
